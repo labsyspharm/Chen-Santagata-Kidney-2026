@@ -1,0 +1,1440 @@
+---
+title: "JY Pathology scores"
+author: "Clemens Hug"
+output:
+  html_document:
+    theme: flatly
+    toc: yes
+    number_sections: true
+    toc_float:
+      collapsed: false
+    toc_depth: 4
+    code_folding: hide
+    self_contained: true
+---
+
+```{r setup}
+library(tidyverse)
+library(DT)
+library(ordinal)
+library(broom.mixed)
+library(coin)
+library(DescTools)
+library(googlesheets4)
+library(powerjoin)
+library(brms)
+library(janitor)
+library(qs)
+library(ggbeeswarm)
+library(ggpubr)
+library(tidybayes)
+library(here)
+
+theme_set(
+  theme_minimal(base_family = "Helvetica")
+)
+
+fig_dir <- here("figures")
+dir.create(fig_dir, showWarnings = FALSE)
+```
+
+## Loading data
+
+```{r}
+patho_scores_raw <- read_sheet(
+  "https://docs.google.com/spreadsheets/d/1eATs2B_xOC9rx1VN9dDIbHpNp9iPk6Q7hrkl8zfP9Dk/edit?gid=0#gid=0"
+) %>%
+  drop_na(`LSP ID`) %>%
+  rename(
+    Albumin = `Albumin (tubule)`
+  )
+
+orion_quants_and_clinical_raw <- read_sheet(
+  "https://docs.google.com/spreadsheets/d/1a1nLyFQNTJYoVWLX9JS2wIItvTqnxLVJ30NXdnLd7AE/edit?gid=382231029#gid=382231029",
+  sheet = 1
+)
+
+clinical_scores_raw <- orion_quants_and_clinical_raw %>%
+  select(
+    `LSP ID` = slideName,
+    ends_with("_score")
+  ) %>%
+  rename_with(\(x) str_remove(x, fixed("_score"))) %>%
+  rename(
+    `Lambda LC` = Lambda,
+    `Kappa LC` = Kappa
+  )
+
+orion_quants_raw <- orion_quants_and_clinical_raw %>%
+  select(
+    `LSP ID` = slideName,
+    starts_with("mean_")
+  ) %>%
+  rename_with(\(x) str_remove(x, fixed("mean_"))) %>%
+  rename(
+    `Lambda LC` = Lambda,
+    `Kappa LC` = Kappa
+  )
+```
+
+```{r dt-setup}
+dt_options <- list(
+  dom = "Bfrtip",
+  buttons = "copy"
+)
+
+dt_format_signif <- function(dt) {
+  formatSignif(
+    dt,
+    keep(dt$x$data, is.numeric) %>% names(),
+    digits = 2
+  )
+}
+
+dt_default_table <- function(df) {
+  datatable(
+    df,
+    extensions = "Buttons",
+    options = dt_options
+  ) %>%
+    dt_format_signif()
+}
+```
+
+
+## Data processing
+
+```{r}
+markers <- reduce(
+  list(
+    colnames(patho_scores_raw),
+    colnames(clinical_scores_raw),
+    colnames(orion_quants_raw)
+  ),
+  intersect
+) %>%
+  setdiff(c("LSP ID"))
+
+score_order <- c("0", "0.5", "1", "2", "3+")
+marker_order <- c("IgG", "IgA", "IgM", "Kappa LC", "Lambda LC", "C3", "C1q", "Fibrinogen", "Albumin")
+
+scores_all <- bind_rows(
+  list(
+    pathologist = patho_scores_raw,
+    clinical = clinical_scores_raw
+  ) %>%
+    map(\(x) mutate(x, across(all_of(markers), as.character))),
+  .id = "source"
+) %>%
+  select(`LSP ID`, source, all_of(markers)) %>%
+  pivot_longer(
+    all_of(markers),
+    names_to = "marker",
+    values_to = "score_original"
+  ) %>%
+  mutate(
+    score = str_remove_all(score_original, fixed("+")) %>%
+      as.numeric() %>%
+      cut(
+        breaks = c(-Inf, .1, .75, 1.5, 2.5, Inf),
+        labels = score_order,
+        right = FALSE,
+        ordered_result = TRUE
+      ),
+    marker = factor(
+      marker,
+      levels = marker_order
+    )
+  ) %>%
+  group_by(`LSP ID`, marker) %>%
+  mutate(
+    both_sources = n_distinct(source) == 2
+  ) %>%
+  ungroup() %>%
+  select(-score_original)
+
+orion_quants <- orion_quants_raw %>%
+  pivot_longer(
+    -`LSP ID`,
+    names_to = "marker",
+    values_to = "expression"
+  ) %>%
+  mutate(
+    log_expression = log10(expression),
+    marker = factor(
+      marker,
+      levels = marker_order
+    )
+  ) %>%
+  group_by(marker) %>%
+  mutate(
+    log_expression_deciles = cut(
+      log_expression,
+      breaks = c(-Inf, quantile(log_expression, probs = seq(0.2, .8, 0.2), type = 8), Inf),
+      labels = 1:5,
+      include.lowest = TRUE,
+      ordered_result = TRUE
+    )
+  ) %>%
+  ungroup()
+```
+
+Checking `LSP ID` overlap between the datasets
+
+```{r}
+setdiff(scores_all$`LSP ID`, orion_quants$`LSP ID`)
+setdiff(orion_quants$`LSP ID`, scores_all$`LSP ID`)
+```
+
+All `LSP ID`s are present in both datasets as expected.
+
+## Comparing pathologist and clinical scores
+
+### Confusion matrices
+
+```{r}
+scores_confusion <- scores_all %>%
+  filter(both_sources) %>%
+  select(-both_sources) %>%
+  pivot_wider(
+    names_from = source,
+    values_from = score
+  ) %>%
+  count(marker, pathologist, clinical)
+
+p <- scores_confusion %>%
+  complete(
+    marker, pathologist, clinical,
+    fill = list(n = 0)
+  ) %>%
+  ggplot(aes(x = pathologist, y = clinical, fill = n)) +
+  geom_tile() +
+  geom_text(
+    aes(label = n),
+    color = "white"
+  ) +
+  scale_fill_continuous(
+    trans = scales::transform_pseudo_log()
+  ) +
+  facet_wrap(~marker) +
+  coord_equal()
+
+p
+```
+
+### Cohen’s Kappa Statistic
+
+Purpose: Measures the agreement between two raters
+(in this case, the pathologist and the algorithm) beyond what would be expected by chance.
+
+It is computed based on the confusion tables above.
+
+Interpretation: Values range from -1 to 1, where:
+
+* < 0: Less agreement than expected by chance
+* 0.01–0.20: Slight agreement
+* 0.21–0.40: Fair agreement
+* 0.41–0.60: Moderate agreement
+* 0.61–0.80: Substantial agreement
+* 0.81–1.00: Almost perfect agreement
+
+Source for score ranges: https://doi.org/10.2307%2F2529310
+
+```{r}
+mods <- scores_all %>%
+  filter(both_sources) %>%
+  select(-both_sources) %>%
+  group_nest(marker) %>%
+  rowwise() %>%
+  mutate(
+    mod = list(
+      clmm(
+        score ~ source + (1 | `LSP ID`),
+        data = data,
+        link = "logit"
+      )
+    ),
+    kappa = list(
+      KappaM(
+        data %>%
+          pivot_wider(
+            names_from = source,
+            values_from = score
+          ) %>%
+          select(-`LSP ID`),
+        conf.level = .95,
+        method = "Conger"
+      )
+    ),
+    kappa_weighted = list(
+      irr::kappa2(
+        data %>%
+          pivot_wider(
+            names_from = source,
+            values_from = score
+          ) %>%
+          select(-`LSP ID`),
+        weight = "squared"
+      )
+    )
+  ) %>%
+  ungroup()
+
+kappa_df <- mods %>%
+  transmute(
+    marker,
+    kappa = map(kappa, \(x) tibble(kappa = x[["kappa"]])),
+    kappa_weighted = map(
+      kappa_weighted,
+      \(x) as.data.frame(magrittr::set_class(x, "list")) %>%
+        select(kappa = value, p.value)
+    )
+  ) %>%
+  pivot_longer(starts_with("kappa"), names_to = "kappa_type", values_to = "kappa") %>%
+  unnest(kappa)
+```
+
+### Kappa table
+
+```{r}
+dt_default_table(
+  kappa_df
+)
+```
+
+The weighted kappa allows disagreements to be weighted differently according to
+the distance between the scores. This is useful when the scores are ordered.
+
+It is I would say the correct kappa metric to use here, since the scores are ordered,
+not categorical, so the distances are meaningful.
+
+`p.value` here tells you if the kappa is significantly higher than 0, meaning
+a significant value tells you that the agreement is higher than expected by chance.
+
+```{r}
+p <- kappa_df %>%
+  ggplot(aes(x = marker, y = kappa, fill = kappa_type)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_col(position = "dodge") +
+  facet_wrap(~kappa_type, ncol = 1)
+
+p
+```
+
+
+### Ordinal mixed model
+
+While Kappa gives you a measurement for agreement, it doesn't tell you what the
+differences are when there is disagreement. We can use an ordinal mixed model
+to tell us that. It basically can tell us if the pathologist scored higher or
+lower than the clinical report.
+
+Only use 53 cases that have clinical and pathologist scores
+
+```{r}
+mods_df <- mods %>%
+  transmute(
+    marker,
+    res = map(mod, tidy)
+  ) %>%
+  unnest(res) %>%
+  filter(term =="sourcepathologist") %>%
+  select(
+    marker, estimate, std.error, p.value
+  )
+```
+
+### Ordinal mixed model table
+
+Here we are testing for differences in mean scores between clinical reports
+and your pathologist using an ordinal mixed model. `estimate` is a slope showing
+the magnitude of difference in scores between the pathologist and the clinical.
+0 means no difference, <0 means the pathologist scores lower, >0
+means the pathologist scores higher. `p.value` shows if the slope is signicantly
+different from 0.
+
+`p.value` shows you the significance of the difference between the pathologist
+and the clinical report in either positive or negative direction. `NA` values for
+`p.value` indicate that the model did not converge for some reason, need to
+investigate.
+
+This complements the Kappa score and gives you a sense for the direction and
+magnitude of disagreement between the pathologist and the clinical report.
+
+```{r}
+dt_default_table(
+  mods_df
+)
+```
+
+### Ordinal mixed model plot
+
+```{r}
+p <- mods_df %>%
+  mutate(across(marker, \(x) fct_reorder(x, estimate))) %>%
+  ggplot(aes(x = estimate, y = marker, fill = p.value < .05)) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c(`FALSE` = "grey", `TRUE` = "red")) +
+  labs(
+    y = NULL,
+    title = "Difference in mean scores between pathologist and clinical report",
+  )
+
+p
+```
+
+Positive values mean pathologist scores higher, negative values mean pathologist
+scores lower than the clinical report scores.
+
+
+## Relating scores with Orion quants
+
+```{r}
+orion_vs_scores_all <- power_inner_join(
+  scores_all,
+  orion_quants,
+  by = c("LSP ID", "marker"),
+  check = check_specs(
+    unmatched_keys_left = "warn",
+    unmatched_keys_right = "warn",
+    duplicate_keys_right = "warn"
+  )
+) %>%
+  group_by(`LSP ID`) %>%
+  mutate(
+    both_sources = n_distinct(source) == 2,
+    sample_in = if_else(both_sources, "both", "single")
+  ) %>%
+  ungroup() %>%
+  clean_names()
+
+orion_vs_scores_all_cor_data <- bind_rows(
+  orion_vs_scores_all %>%
+    filter(both_sources),
+  orion_vs_scores_all %>%
+    filter(source == "clinical") %>%
+    mutate(source = "clinical_all")
+)
+```
+
+### Boxplots
+
+```{r, fig.width = 16, fig.height = 8, dpi = 200}
+p <- orion_vs_scores_all %>%
+  drop_na(score) %>%
+  ggplot(
+    aes(
+      x = score,
+      y = log2(10^log_expression),
+      color = fct_rev(source)
+    )
+  ) +
+  geom_quasirandom(
+    orientation = "x",
+    shape = 16,
+    width = .3,
+    alpha = 0.6,
+    # color = paletteer::paletteer_d("ggsci::category10_d3")[2]
+  ) +
+  geom_boxplot(
+    aes(color = NULL),
+    outliers = FALSE,
+    fill = NA_character_
+  ) +
+  paletteer::scale_color_paletteer_d("ggsci::category10_d3", guide = "none") +
+  ggh4x::facet_grid2(
+    vars(source), vars(marker),
+    scales = "free_y", independent = "y", axes = "all"
+  ) +
+  envalysis::theme_publish() +
+  theme(
+    legend.position = "right"
+  ) +
+  labs(
+    x = "Score",
+    y = "log2(expression)",
+    color = "Sample in"
+  )
+p
+
+ggsave(
+  file.path(fig_dir, "orion_vs_scores_boxplot.pdf"),
+  p, width = 14, height = 4
+)
+```
+
+### JT tests
+
+Here we are testing whether there is a significant monotonic relationship between
+the pathologist's scores and the Orion quantification using the
+(https://en.wikipedia.org/wiki/Jonckheere%27s_trend_test)[Jonckheere-Terpstra test].
+
+```{r}
+jt_results <- orion_vs_scores_all %>%
+  drop_na(score) %>%
+  group_by(source, marker) %>%
+  summarize(
+    res = list(
+      DescTools::JonckheereTerpstraTest(
+        log_expression,
+        score,
+        alternative = "increasing",
+        exact = FALSE
+      ) %>%
+        tidy()
+    ),
+    .groups = "drop"
+  ) %>%
+  unnest(res)
+
+dt_default_table(
+  jt_results
+)
+```
+
+### Confusion matrix plot
+
+Confusion matrix of the scores from the pathologist and the clinical report
+against the Orion quant quantiles that are used to compute the Kappa
+correlation.
+
+```{r, fig.width = 16, fig.height = 7, dpi = 200}
+p <- orion_vs_scores_all_cor_data %>%
+  drop_na(score, log_expression_deciles) %>%
+  count(source, marker, score, log_expression_deciles) %>%
+  complete(
+    source, marker, score, log_expression_deciles,
+    fill = list(n = 0)
+  ) %>%
+  ggplot(aes(x = score, y = log_expression_deciles, fill = n)) +
+  geom_raster() +
+  geom_text(
+    aes(label = n),
+    color = "white"
+  ) +
+  scale_fill_continuous(
+    trans = scales::transform_pseudo_log()
+  ) +
+  facet_grid(source ~ marker) +
+  coord_equal() +
+  labs(
+    x = "Score",
+    y = "Orion expression quantiles",
+    fill = "Count"
+  )
+
+p
+```
+
+### Correlations
+
+`cocor` is a package that can be used to compare correlation coefficients between
+two groups. Here we are using it to compare which one compares stronger with the
+Orion quants: the pathologist's scores or the scores from the clinical report.
+
+We use Kendall correlation here, since the scores are ordinal and we have lots
+of ties in the data.
+
+```{r}
+orion_vs_scores_all_cor_raw <- orion_vs_scores_all_cor_data %>%
+  group_by(source, marker) %>%
+  summarize(
+    kendall = list(
+      cor.test(
+        log_expression,
+        as.integer(score),
+        method = "kendall"
+      ) %>%
+        tidy() %>%
+        bind_cols(
+          DescTools::KendallTauB(
+            log_expression,
+            as.integer(score),
+            conf.level = .95
+          ) %>%
+            as.list() %>%
+            as_tibble()
+        )
+    ),
+    kappa = list(
+      irr::kappa2(
+        tibble(score, log_expression_deciles),
+        weight = "equal"
+      ) %>%
+        magrittr::set_class("list") %>%
+        as.data.frame() %>%
+        select(kappa = value, p.value)
+    ),
+    .groups = "drop"
+  )
+
+orion_vs_scores_cross_cor <- orion_vs_scores_all %>%
+   # Arbitrary
+  filter(marker == "IgG", both_sources) %>%
+  transmute(
+    lsp_id, source,
+    score = as.integer(score)
+  ) %>%
+  pivot_wider(names_from = "source", values_from = "score") %>% {
+    cor.test(
+      ~ pathologist + clinical,
+      data = .,
+      method = "kendall"
+    )
+  } %>%
+  tidy()
+
+orion_vs_scores_kendall <- orion_vs_scores_all_cor_raw %>%
+  select(source, marker, kendall) %>%
+  unnest(kendall) %>%
+  select(-c(method, alternative, tau_b, statistic))
+
+orion_vs_scores_kappa <- orion_vs_scores_all_cor_raw %>%
+  select(source, marker, kappa) %>%
+  unnest(kappa)
+
+orion_vs_scores_all_cocor <- tibble(
+  comparison_1 = c("pathologist", "pathologist"),
+  comparison_2 = c("clinical", "clinical_all")
+) %>%
+  inner_join(
+    orion_vs_scores_kendall,
+    by = c("comparison_1" = "source"),
+    relationship = "many-to-many"
+  ) %>%
+  inner_join(
+    orion_vs_scores_kendall,
+    by = c("comparison_2" = "source", "marker"),
+    suffix = c("_pathologist", "_clinical"),
+    relationship = "many-to-many"
+  ) %>%
+  rowwise() %>%
+  mutate(
+    res = list(
+      cocor::cocor.dep.groups.overlap(
+        r.jk = estimate_clinical,
+        r.jh = estimate_pathologist,
+        r.kh = orion_vs_scores_cross_cor$estimate,
+        n = 53
+      )
+    )
+  ) %>%
+  ungroup() %>%
+  mutate(
+    res_df = map(res, \(x) as_tibble(x@olkin1967))
+  )
+
+orion_vs_scores_all_cocor_df <- orion_vs_scores_all_cocor %>%
+  select(-res) %>%
+  unnest(res_df)
+```
+
+#### Correlation tables
+
+##### Kendall correlation
+
+```{r}
+dt_default_table(
+  orion_vs_scores_kendall
+)
+```
+
+Kendall correlations between clinical/pathologist scores and Orion
+quantifications. `estimate` is the Tau-b correlation coefficient, `source` is
+indicating the source of the scores.
+
+##### Kappa correlation
+
+```{r}
+dt_default_table(
+  orion_vs_scores_kappa
+)
+```
+
+Kappa correlations between clinical/pathologist scores and Orion
+quantifications. For this purpose Orion quantifications were binned into
+five equally sized bins (quantiles).
+
+##### `cocor` comparison
+
+```{r}
+orion_vs_scores_all_cocor_df %>%
+  select(
+    marker,
+    comparison = comparison_2,
+    starts_with(
+      fixed(c("estimate_", "p.value_"))
+    ),
+    p.value
+  ) %>%
+  dt_default_table()
+```
+
+Comparing correlations between the pathologist and the clinical report with the
+Orion quants. In this table with have the individual correlation coefficients
+(`estimate__clinical` and `estimate__pathologist`) as well as p-values for the
+individual correlations
+(`p.value_clinical` and `p.value_pathologist`). These tell you if the individual
+correlations are significantly different from 0.
+
+The `p.value` column tells you if the two correlation coefficients are significantly
+different from each other. If the p-value is < 0.05, the correlation coefficients
+are significantly different.
+
+We're using the `cocor.dep.groups.overlap` flavor of the test
+("Performs a test of significance for the difference between two correlations
+based on dependent groups (e.g., the same group). The two correlations are
+overlapping, i.e., they have one variable in common."). The test is based on
+Olkin's z from https://doi.org/10.3102/00028312007002189.
+
+#### Correlation plot Kendall
+
+```{r fig.width = 5, fig.height = 4, dpi = 200}
+p <- orion_vs_scores_kendall %>%
+  ggplot(
+    aes(
+      x = source, y = estimate
+    )
+  ) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dotted"
+  ) +
+  geom_line(
+    aes(group = marker)
+  ) +
+  geom_pointrange(
+    aes(
+      ymin = lwr.ci, ymax = upr.ci,
+      color = source
+    )
+  ) +
+  geom_bracket(
+    aes(
+      xmin = comparison_1,
+      xmax = comparison_2,
+      label = signif(p.value, 2)
+    ),
+    data = orion_vs_scores_all_cocor_df,
+    y.position = .75,
+    label.size = 2.5,
+    step.increase = .2,
+    step.group.by = "marker"
+  ) +
+  facet_wrap(~marker) +
+  ggokabeito::scale_color_okabe_ito(guide = "none") +
+  scale_y_continuous(
+    expand = expansion(mult = c(.05, .15))
+  ) +
+  labs(
+    x = NULL,
+    y = "Kendall's tau correlation"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+p
+```
+
+On the y-axis with have the correlation coefficients of the scores from the
+clinical report and the pathologist with the Orion quants, respectively. The
+lines show the 95% confidence intervals for the correlation coefficients. The
+brackets show the p-values for the difference between the two correlation
+coefficients. If the p-value is < 0.05, the correlation coefficients are
+significantly different.
+
+#### Correlation plot Kappa
+
+```{r fig.width = 5, fig.height = 4, dpi = 200}
+p <- orion_vs_scores_kappa %>%
+  ggplot(
+    aes(
+      x = source, y = kappa
+    )
+  ) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dotted"
+  ) +
+  geom_line(
+    aes(group = marker)
+  ) +
+  geom_segment(
+    aes(
+      xend = source
+    ),
+    linetype = "dashed",
+    yend = 0
+  ) +
+  geom_point(
+    aes(color = source)
+  ) +
+  facet_wrap(~marker) +
+  ggokabeito::scale_color_okabe_ito(guide = "none") +
+  scale_y_continuous(
+    expand = expansion(mult = c(.05, .15))
+  ) +
+  labs(
+    x = NULL,
+    y = "Kendall's tau correlation"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+p
+```
+
+### Bayesian models
+
+In this approach we model the relationship between the Orion quants and the
+scores from the pathologist and the clinical report. We use a Bayesian ordinal
+regression model to do this. The model is a cumulative link mixed model, which
+is a type of ordinal regression model that can account for the ordinal nature
+of the scores.
+
+We fit a separate model for each marker and score source. We then use the
+leave-one-out cross-validation method to compare the models and see which one
+performs better, i.e. whether the Orion quants are better at predicting the
+pathologist's scores or the clinical report's scores.
+
+```{r}
+orion_vs_scores_model_input <- orion_vs_scores_all %>%
+  group_nest(source, marker)
+
+mod1 <- brm(
+  score ~ log_expression + (1 | lsp_id),
+  data = orion_vs_scores_model_input$data[[4]],
+  family = cumulative(link = "logit", threshold = "flexible"),
+  prior = c(set_prior(prior = "normal(0,5)", class = "Intercept"),
+            set_prior(prior = "normal(0,5)", class = "b"),
+            set_prior(prior = "cauchy(0,5)", class = "sd")),
+  iter = 8000,
+  control = list(max_treedepth = 15, adapt_delta = 0.99),
+  cores = 4,
+  seed = 42,
+  save_pars = save_pars(all = TRUE)
+) %>%
+  add_criterion("loo", moment_match = TRUE)
+
+mod2 <- brm(
+  score ~ log_expression,
+  data = orion_vs_scores_model_input$data[[4]],
+  family = cumulative(link = "logit", threshold = "flexible"),
+  prior = c(set_prior(prior = "normal(0,5)", class = "Intercept"),
+            set_prior(prior = "normal(0,5)", class = "b"),
+            set_prior(prior = "cauchy(0,5)", class = "sd")),
+  iter = 8000,
+  control = list(max_treedepth = 15, adapt_delta = 0.99),
+  cores = 4,
+  seed = 42,
+  save_pars = save_pars(all = TRUE)
+) %>%
+  add_criterion("loo", moment_match = TRUE)
+
+mod3 <- brm(
+  score ~ log_expression,
+  data = orion_vs_scores_model_input$data[[4]],
+  family = cumulative(link = "cauchit", threshold = "flexible"),
+  prior = c(set_prior(prior = "normal(0,5)", class = "Intercept"),
+            set_prior(prior = "normal(0,5)", class = "b")),
+  iter = 8000,
+  control = list(max_treedepth = 15, adapt_delta = 0.99),
+  cores = 4,
+  seed = 42,
+  save_pars = save_pars(all = TRUE)
+) %>%
+  add_criterion("loo", moment_match = TRUE)
+
+mod4 <- brm(
+  bf(score ~ log_expression, disc ~ 1),
+  data = orion_vs_scores_model_input$data[[4]],
+  family = cumulative(link = "logit", threshold = "flexible"),
+  prior = c(set_prior(prior = "normal(0,5)", class = "Intercept"),
+            set_prior(prior = "normal(0,5)", class = "b"),
+            set_prior(prior = "normal(0, 1)", class = "Intercept", dpar = "disc")),
+  iter = 8000,
+  control = list(max_treedepth = 15, adapt_delta = 0.99),
+  cores = 4,
+  seed = 42,
+  save_pars = save_pars(all = TRUE)
+) %>%
+  add_criterion("loo", moment_match = TRUE)
+
+loo_compare(mod1, mod2, mod3, mod4)
+```
+
+Model with observation-level random effects (mod1) is the best model according to
+the LOO criterion.
+
+```{r}
+fit_model <- function(data) {
+  brm(
+    score ~ log_expression + (1 | lsp_id),
+    data = data,
+    family = cumulative(link = "logit", threshold = "flexible"),
+    prior = c(set_prior(prior = "normal(0,5)", class = "Intercept"),
+              set_prior(prior = "normal(0,5)", class = "b"),
+              set_prior(prior = "cauchy(0,5)", class = "sd")),
+    iter = 8000,
+    control = list(max_treedepth = 15, adapt_delta = 0.99),
+    cores = 4,
+    seed = 42,
+    save_pars = save_pars(all = TRUE)
+  )
+}
+
+if (!file.exists(here("orion_vs_scores_model_loos.qs"))) {
+  mod1 <- fit_model(orion_vs_scores_model_input$data[[1]]) %>%
+    add_criterion("loo", moment_match = TRUE)
+
+  orion_vs_scores_models <- orion_vs_scores_model_input %>%
+    rowwise() %>%
+    mutate(
+      mod = list(
+        update(
+          mod1,
+          newdata = data,
+          iter = 8000,
+          control = list(max_treedepth = 15, adapt_delta = 0.99),
+          cores = 4,
+          seed = 42,
+          save_pars = save_pars(all = TRUE)
+        ) %>%
+          add_criterion("loo", moment_match = TRUE)
+      )
+    ) %>%
+    ungroup()
+
+  qsave(
+    orion_vs_scores_models,
+    here("orion_vs_scores_model_loos.qs")
+  )
+} else {
+  orion_vs_scores_models <- qread(here("orion_vs_scores_model_loos.qs"))
+}
+```
+
+```{r}
+post_draws <- orion_vs_scores_models %>%
+  rowwise() %>%
+  mutate(
+    draws = list(
+      epred_draws(
+        mod,
+        newdata = tibble(
+          log_expression = seq(quantile(data$log_expression, c(0.025, 0.975)), length.out = 20)
+        ),
+        re_formula = NA
+      )
+    )
+  ) %>%
+  ungroup() %>%
+  select(-c(data, mod)) %>%
+  unnest(draws)
+
+
+
+```
+
+#### Plot Orion quant as predictor
+
+```{r, fig.width = 14, fig.height = 6, dpi = 200}
+p <- post_draws %>%
+  mutate(across(.category, ordered)) %>%
+  ggplot(
+    aes(
+      x = log2(10^log_expression),
+      y = .epred,
+      color = .category
+    )
+  ) +
+  stat_lineribbon(
+    aes(
+      fill = stage(.category, after_scale = alpha(fill, .15))
+    ),
+    .width = c(.95)
+  ) +
+  # geom_vline(
+  #   data = thresholds_mean,
+  #   aes(xintercept = value),
+  #   linetype = "dashed",
+  #   alpha = 0.5,
+  #   show.legend = FALSE
+  # ) +
+  ggh4x::facet_grid2(
+    source ~ marker,
+    scales = "free_x",
+    independent = "x",
+    axes = "all"
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format()
+  ) +
+  envalysis::theme_publish() +
+  coord_cartesian(
+    expand = FALSE
+  ) +
+  labs(
+    x = "log2(expression)",
+    y = "Probability",
+    title = "Predicted scores from Orion quants",
+    fill = "Score",
+    color = "Score"
+  )
+
+p
+
+ggsave(
+  file.path(fig_dir, "score_pred_model_probability_curves.pdf"),
+  p, width = 20, height = 5
+)
+```
+
+The Bayesian model allows us to compute the probability of each score given some
+Orion quantification results. This plot shows the predicted probabilities of
+each clinical and pathologist score given the Orion quantification results.
+
+
+```{r}
+p <- post_draws %>%
+  mutate(across(.category, ordered)) %>%
+  ggplot(
+    aes(
+      x = log2(10) * log_expression,
+      y = .epred,
+      color = .category
+    )
+  ) +
+  stat_lineribbon(
+    aes(
+      fill = stage(.category, after_scale = alpha(fill, .15))
+    ),
+    .width = c(.95),
+    position = "stack"
+  ) +
+  ggh4x::facet_grid2(
+    source ~ marker,
+    scales = "free_x",
+    independent = "x",
+    axes = "all"
+  ) +
+  scale_y_continuous(
+    labels = scales::percent_format()
+  ) +
+  envalysis::theme_publish() +
+  coord_cartesian(
+    expand = FALSE
+  ) +
+  labs(
+    x = "log2(expression)",
+    y = "Probability",
+    title = "Predicted scores from Orion quants",
+    fill = "Score",
+    color = "Score"
+  )
+
+p
+
+ggsave(
+  file.path(fig_dir, "score_pred_model_probability_curves_stacked.pdf"),
+  p, width = 20, height = 5
+)
+```
+
+
+#### Threshold plot
+
+```{r, fig.width = 14, fig.height = 6, dpi = 200}
+p <- thresholds %>%
+  ggplot(aes(x = expression_threshold, y = threshold_name)) +
+  stat_pointinterval() +
+  facet_grid(source ~ marker, scales = "free_x") +
+  labs(
+    x = "log10(expression) threshold",
+    y = "Score boundary",
+    title = "Model-estimated thresholds between score categories",
+    subtitle = "Points show posterior medians with 50% and 95% credible intervals"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p
+
+ggsave(
+  file.path(fig_dir, "score_thresholds.pdf"),
+  p, width = 14, height = 6
+)
+```
+
+
+### Frequentist model with expression as predictor
+
+We'll fit frequentist cumulative link mixed models (CLMMs) using the `ordinal` package, which is the frequentist equivalent of the Bayesian models above.
+
+```{r}
+fit_clmm_model <- function(data) {
+  clmm(
+    score ~ log_expression + (1 | lsp_id),
+    data = data,
+    link = "logit",
+    threshold = "flexible"
+  )
+}
+
+orion_vs_scores_clmm_models <- orion_vs_scores_model_input %>%
+  rowwise() %>%
+  mutate(
+    clmm_mod = list(fit_clmm_model(data)),
+    # Extract model summary
+    clmm_summary = list(summary(clmm_mod)),
+    # Extract AIC for model comparison
+    aic = AIC(clmm_mod),
+    # Extract coefficients using summary output which handles dimensions properly
+    coefs = list(
+      as_tibble(coef(summary(clmm_mod)), rownames = "coefficient") %>%
+        rename(
+          estimate = Estimate,
+          std_error = `Std. Error`,
+          z_value = `z value`,
+          p_value = `Pr(>|z|)`
+        )
+    )
+  ) %>%
+  ungroup()
+
+# Extract coefficient table for log_expression across all models
+clmm_coefficients <- orion_vs_scores_clmm_models %>%
+  select(source, marker, coefs) %>%
+  unnest(coefs) %>%
+  filter(coefficient == "log_expression")
+
+# Compare AICs between pathologist and clinical models
+clmm_aic_comparison <- orion_vs_scores_clmm_models %>%
+  select(source, marker, aic) %>%
+  pivot_wider(names_from = source, values_from = aic) %>%
+  mutate(
+    aic_diff = clinical - pathologist,
+    better_model = if_else(aic_diff < 0, "clinical", "pathologist")
+  )
+```
+
+#### CLMM coefficient table
+
+This shows the frequentist estimates for the effect of log expression on the ordinal scores.
+
+```{r}
+dt_default_table(clmm_coefficients)
+```
+
+#### AIC model comparison
+
+Comparing the Akaike Information Criterion (AIC) between pathologist and clinical models. Lower AIC indicates better model fit.
+
+```{r}
+dt_default_table(clmm_aic_comparison)
+```
+
+#### CLMM coefficient plot
+
+```{r, fig.width = 8, fig.height = 6, dpi = 200}
+p <- clmm_coefficients %>%
+  mutate(
+    ci_lower = estimate - 1.96 * std_error,
+    ci_upper = estimate + 1.96 * std_error,
+    marker = fct_reorder(marker, estimate)
+  ) %>%
+  ggplot(aes(x = estimate, y = marker, color = source)) +
+  geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) +
+  geom_pointrange(
+    aes(xmin = ci_lower, xmax = ci_upper),
+    position = position_dodge(width = 0.3)
+  ) +
+  ggokabeito::scale_color_okabe_ito() +
+  labs(
+    x = "Coefficient estimate (log odds)",
+    y = "Marker",
+    color = "Source",
+    title = "Frequentist CLMM: Effect of log expression on ordinal scores",
+    subtitle = "Error bars show 95% confidence intervals"
+  ) +
+  theme(legend.position = "bottom")
+
+p
+```
+
+#### Predicted probabilities from CLMM
+
+Generate predicted probabilities across the range of log expression values for comparison with the Bayesian model.
+
+```{r}
+# Generate predictions for CLMM models
+clmm_predictions <- orion_vs_scores_clmm_models %>%
+  rowwise() %>%
+  mutate(
+    pred_data = list(
+      tibble(
+        log_expression = seq(min(data$log_expression), max(data$log_expression), length.out = 50)
+      )
+    ),
+    predictions = list(
+      # Get population-level predictions (marginal over random effects)
+      predict(clmm_mod, newdata = pred_data, type = "prob") %>%
+        as_tibble() %>%
+        bind_cols(pred_data) %>%
+        pivot_longer(
+          cols = starts_with(c("0", "1", "2", "3")),
+          names_to = "score_category",
+          values_to = "probability"
+        ) %>%
+        # Ensure proper ordering of score categories
+        filter(score_category %in% score_order) %>%
+        mutate(
+          score_category = factor(score_category, levels = score_order, ordered = TRUE)
+        )
+    )
+  ) %>%
+  ungroup() %>%
+  select(source, marker, predictions) %>%
+  unnest(predictions)
+```
+
+```{r, fig.width = 14, fig.height = 6, dpi = 200}
+p <- clmm_predictions %>%
+  ggplot(
+    aes(
+      x = log_expression,
+      y = probability,
+      color = score_category
+    )
+  ) +
+  geom_line(linewidth = 1) +
+  facet_grid(
+    source ~ marker,
+    scales = "free_x"
+  ) +
+  labs(
+    x = "log10(expression)",
+    y = "Predicted probability",
+    color = "Score",
+    title = "Frequentist CLMM: Predicted score probabilities from Orion quants"
+  ) +
+  theme(legend.position = "bottom")
+
+p
+
+ggsave(
+  file.path(fig_dir, "clmm_score_pred_probability_curves.pdf"),
+  p, width = 22, height = 6
+)
+```
+
+#### Comparison of Bayesian vs Frequentist predictions
+
+Compare the predicted probabilities from both approaches to see how similar they are.
+
+```{r, fig.width = 16, fig.height = 8, dpi = 200}
+# Prepare Bayesian predictions for comparison
+bayesian_comparison <- post_draws %>%
+  mutate(
+    score_category = factor(as.character(.category), levels = score_order, ordered = TRUE),
+    model_type = "Bayesian"
+  ) %>%
+  select(source, marker, log_expression, score_category, probability = .epred, model_type)
+
+# Prepare frequentist predictions for comparison
+frequentist_comparison <- clmm_predictions %>%
+  mutate(model_type = "Frequentist") %>%
+  select(source, marker, log_expression, score_category, probability, model_type)
+
+# Combine both for comparison
+model_comparison <- bind_rows(bayesian_comparison, frequentist_comparison)
+
+p <- model_comparison %>%
+  ggplot(
+    aes(
+      x = log_expression,
+      y = probability,
+      color = score_category,
+      linetype = model_type
+    )
+  ) +
+  geom_line(linewidth = 0.8, alpha = 0.8) +
+  facet_grid(
+    source ~ marker,
+    scales = "free_x"
+  ) +
+  scale_linetype_manual(values = c("Bayesian" = "solid", "Frequentist" = "dashed")) +
+  labs(
+    x = "log10(expression)",
+    y = "Predicted probability",
+    color = "Score",
+    linetype = "Model type",
+    title = "Comparison: Bayesian vs Frequentist predicted probabilities",
+    subtitle = "Solid lines = Bayesian, Dashed lines = Frequentist"
+  ) +
+  theme(legend.position = "bottom")
+
+p
+
+ggsave(
+  file.path(fig_dir, "bayesian_vs_frequentist_comparison.pdf"),
+  p, width = 22, height = 8
+)
+```
+
+### Bayesian model with score as predictor
+
+```{r}
+if (!file.exists(here("orion_vs_scores_reverse_model_loos.qs"))) {
+  mod1 <- brm(
+    log_expression ~ mo(score) + (1 | lsp_id),
+    data = orion_vs_scores_model_input$data[[1]],
+    prior = c(set_prior(prior = "normal(0,5)", class = "Intercept"),
+              set_prior(prior = "normal(0,5)", class = "b"),
+              set_prior(prior = "cauchy(0,5)", class = "sd")),
+    iter = 6000,
+    control = list(max_treedepth = 15, adapt_delta = 0.99),
+    cores = 4,
+    seed = 42,
+    save_pars = save_pars(all = TRUE)
+  )
+
+  orion_vs_scores_reverse_models <- orion_vs_scores_model_input %>%
+    rowwise() %>%
+    mutate(
+      mod = list(
+        update(
+          mod1,
+          newdata = data,
+          iter = 6000,
+          control = list(max_treedepth = 15, adapt_delta = 0.99),
+          cores = 4,
+          seed = 42,
+          save_pars = save_pars(all = TRUE)
+        )
+      )
+    ) %>%
+    ungroup()
+
+  qsave(
+    orion_vs_scores_reverse_models,
+    here("orion_vs_scores_reverse_models.qs")
+  )
+
+  orion_vs_scores_reverse_model_loos <- orion_vs_scores_reverse_models %>%
+    mutate(
+      across(mod, \(x) map(x, \(y) add_criterion(y, "loo", moment_match = TRUE)))
+    )
+
+  qsave(
+    orion_vs_scores_reverse_model_loos,
+    here("orion_vs_scores_reverse_model_loos.qs")
+  )
+} else {
+  orion_vs_scores_reverse_model_loos <- qread(here("orion_vs_scores_reverse_model_loos.qs"))
+}
+
+orion_vs_scores_reverse_model_loo_compare_raw <- orion_vs_scores_reverse_model_loos %>%
+  select(-data) %>%
+  pivot_wider(
+    names_from = source, values_from = mod
+  ) %>%
+  mutate(
+    comp = map2(
+      pathologist, clinical,
+      \(x, y) loo_compare(
+        x, y,
+        criterion = "loo",
+        model_names = c("pathologist", "clinical")
+      )
+    )
+  ) %>%
+  select(-c(clinical, pathologist))
+
+orion_vs_scores_reverse_model_loo_compare <- orion_vs_scores_reverse_model_loo_compare_raw %>%
+  mutate(
+    across(comp, \(x) map(x, \(y) as_tibble(y, rownames = "model")))
+  ) %>%
+  unnest(comp)
+
+
+```
+
+
+```{r}
+post_draws_reverse <- orion_vs_scores_reverse_model_loos %>%
+  rowwise() %>%
+  mutate(
+    draws = list(
+      epred_draws(
+        mod,
+        newdata = distinct(data, score = fct_drop(score)),
+        re_formula = NA
+      ) %>%
+        mutate(
+          score = factor(as.character(score), levels = score_order, ordered = TRUE)
+        )
+    )
+  ) %>%
+  ungroup() %>%
+  select(-c(data, mod)) %>%
+  unnest(draws)
+```
+
+#### Plot score as predictor
+
+```{r, fig.width = 14, fig.height = 6, dpi = 200}
+p <- post_draws_reverse %>%
+  # mutate(across(.category, ordered)) %>%
+  ggplot(
+    aes(
+      x = score,
+      y = .epred
+    )
+  ) +
+  geom_quasirandom(
+    aes(
+      y = log_expression,
+      color = sample_in
+    ),
+    orientation = "x",
+    shape = 16,
+    width = .3,
+    data = orion_vs_scores_all %>%
+      drop_na(score)
+  ) +
+  # geom_violin(fill = NA) +
+  stat_lineribbon(
+    .width = c(.5, .95),
+    alpha = .5
+  ) +
+  scale_fill_brewer() +
+  scale_color_manual(
+    values = c(
+      both = alpha("black", .7),
+      single = alpha("black", .1)
+    )
+  ) +
+  ggh4x::facet_grid2(vars(source), vars(marker), scales = "free_y", independent = "y") +
+  # stat_lineribbon(
+  #   aes(
+  #     fill = .category
+  #   ),
+  #   .width = c(.95),
+  #   alpha = .25
+  # ) +
+  # facet_grid(
+  #   source ~ marker,
+  #   scales = "free_x"
+  # ) +
+  labs(
+    x = "Score",
+    y = "log10(expression)",
+    color = "Sample in",
+    fill = "Model\nconfidence interval"
+  )
+
+p
+```
