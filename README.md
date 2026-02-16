@@ -22,7 +22,6 @@ High-plex whole-slide images were acquired using tissue cyclic immunofluorescenc
 
 ### Hardware requirements
 
-<mark>TODO Yu-An and Jerry: Please double check the hardware requirements below:</mark>
 
 CyCIF image processing and analysis requires a computer with at least 200 GB of RAM and 1 TB of free disk space. A high-performance computing cluster is recommended. All other analyses can be performed on a standard desktop or laptop computer with at least 32 GB of RAM.
 
@@ -39,12 +38,6 @@ CyCIF image processing
 
 - Python 3.12
     - NumPy 1.24
-    - ...
-
-Matlab code
-
-- <mark>Matlab xxx</mark>
-    - ...
 
 Pathology score analysis and visualization
 
@@ -76,14 +69,6 @@ Pathology score analysis and visualization
 
 ## Installation guide
 
-### Python environment
-
-<mark>TODO</mark>
-
-### Matlab environment
-
-<mark>TODO</mark>
-
 ### R environment
 
 Download and install R >4.4.2 from https://cloud.r-project.org/. Necessary R packages can be installed using the
@@ -100,13 +85,10 @@ Expected installation time is around 15-30 minutes depending on the internet spe
 
 ## Usage
 
-<mark>TODO: Expand where necessary</mark>
-
 ### CyCIF image processing
 
 Download the example image data from Harvard tissue Atlas website (https://s3.amazonaws.com/www.cycif.org/152-kidney-imaging/LSP20571/index.html) and unzip the files to a local directory. Run the scripts in the `cycif_image_processing` folder sequentially to perform image stitching, registration, segmentation, and feature extraction.
 
-<mark>Expected runtime is around x hours.</mark>
 
 ### Pathology score analysis and visualization
 
