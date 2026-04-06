@@ -22,8 +22,6 @@ High-plex whole-slide images were acquired using tissue cyclic immunofluorescenc
 
 ### Hardware requirements
 
-<mark>TODO Yu-An and Jerry: Please double check the hardware requirements below:</mark>
-
 CyCIF image processing and analysis requires a computer with at least 200 GB of RAM and 1 TB of free disk space. A high-performance computing cluster is recommended. All other analyses can be performed on a standard desktop or laptop computer with at least 32 GB of RAM.
 
 ### Software requirements
