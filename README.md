@@ -91,8 +91,6 @@ Expected installation time is around 15-30 minutes depending on the internet spe
 
 Download the example image data from Harvard tissue Atlas website (https://s3.amazonaws.com/www.cycif.org/152-kidney-imaging/LSP20571/index.html) and unzip the files to a local directory. Run the scripts in the `cycif_image_processing` folder sequentially to perform image stitching, registration, segmentation, and feature extraction.
 
-<mark>Expected runtime is around x hours.</mark>
-
 ### Pathology score analysis and visualization
 
 Run the R script `score_comparison.rmd` using RStudio or in any R terminal using:
