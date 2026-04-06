@@ -37,12 +37,11 @@ CyCIF image processing
 
 - Python 3.12
     - NumPy 1.24
-    - ...
-
+    
 Matlab code
 
-- <mark>Matlab xxx</mark>
-    - ...
+- Matlab 2023b
+- Matlab 2024b
 
 Pathology score analysis and visualization
 
@@ -72,15 +71,6 @@ Pathology score analysis and visualization
     - tidyverse 2.0.0
     - rmarkdown 2.29
 
-## Installation guide
-
-### Python environment
-
-<mark>TODO</mark>
-
-### Matlab environment
-
-<mark>TODO</mark>
 
 ### R environment
 
@@ -96,9 +86,6 @@ install.packages(c("here", "tidybayes", "ggpubr", "ggbeeswarm", "qs", "janitor",
 
 Expected installation time is around 15-30 minutes depending on the internet speed.
 
-## Usage
-
-<mark>TODO: Expand where necessary</mark>
 
 ### CyCIF image processing
 
