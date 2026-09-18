@@ -33,13 +33,13 @@ High-plex whole-slide images were acquired using tissue cyclic immunofluorescenc
 
 ### Hardware requirements
 
-CyCIF image processing and analysis requires a computer with at least 200 GB of RAM and 1 TB of free disk space. A high-performance computing cluster is recommended. All other analyses can be performed on a standard desktop or laptop computer with at least 32 GB of RAM.
+Orion image processing and analysis requires a computer with at least 200 GB of RAM and 1 TB of free disk space. A high-performance computing cluster is recommended. All other analyses can be performed on a standard desktop or laptop computer with at least 32 GB of RAM.
 
 ### Software requirements
 
 #### OS requirements
 
-CyCIF image processing was performed on a Linux system running RedHat Enterprise Linux 9. All other analyses are
+Orion image processing was performed on a Linux system running RedHat Enterprise Linux 9. All other analyses are
 compatible with Windows, macOS, and Linux operating systems.
 
 #### Software packages
