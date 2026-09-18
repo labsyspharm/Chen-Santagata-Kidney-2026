@@ -1,14 +1,25 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-# Integrated Spatial Diagnostics for Clinically Deployable, Quantitative Tissue Pathology
+# A Quantitative Pathology Representation for Kidney Biopsy Interpretation
 
-Jia-Yun Chen, Yu-An Chen, Jia-Ren Lin, Yilin Xu, Claire T. Avillach, Clemens B. Hug, Crystal Chiu, Sabrina Chan, Terri Woo, Helmut G. Rennke, Joseph V. Bonventre, Astrid Weins, Peter K. Sorger, Sandro Santagata
+Jia-Yun Chen*, Yu-An Chen*, Yilin Xu, Claire T. Avillach, Clemens B. Hug, Crystal Chiu, Sabrina Chan, Terri Woo, Helmut G. Rennke, Robert B. Colvin, Joseph V. Bonventre, Astrid Weins, Peter K. Sorger, Jia-Ren Lin#, Sandro Santagata#
+
+*Equal contribution
+#Corresponding Authors
 
 <img src="./docs/KidneyDiagnosticManuscript-landingPage.png" style="max-width:500px;width:100%"/>
 
-## SUMMARY
+## Introduction
+Kidney biopsies contain rich molecular and structural information, yet these observations remain distributed across multiple tissue sections, stains, and imaging modalities and are largely interpreted using qualitative or semi-quantitative assessments. We sought to develop a quantitative pathology representation that preserves the language and logic of renal pathology while bringing these observations together into continuous, compartment-resolved measurements that can be compared across patients and integrated computationally.
 
-Advances in spatial multi-omic tissue atlases have revealed the molecular and architectural complexity of human disease, yet these insights remain largely inaccessible in routine diagnostics. Here, we introduce a clinically compatible spatial pathology framework that unifies one-shot multiplex immunofluorescence, multimodal computational pathology, and interactive digital interpretation within the operational constraints of standard histopathology. From a single biopsy section, this approach generates quantitative, compartment-resolved molecular maps and multimodal predictions that remain aligned with established diagnostic conventions and turnaround times. Applied to 199 consecutively collected kidney biopsies – a testbed rich in mechanistically informative biomarkers and diagnostic complexity – the framework identified disease-defining molecular signatures; quantified key processes such as complement activation, paraprotein imbalance, tubular injury, mesangial expansion, and fibrosis; and uncovered continuous spatial trajectories of progressive podocyte loss and glomerular remodeling. Integrating H&E-derived morphological embeddings with spatial molecular features markedly improved diagnostic accuracy and mechanistic interpretation compared with either modality alone. These findings demonstrate a clinically deployable architecture that incorporates rich molecular and spatial information into routine diagnostic workflows while preserving the interpretive logic of pathology. Although evaluated in kidney disease, the modular design supports rapid extension to other tissues, providing a generalizable route toward quantitative, predictive, and mechanism-informed tissue pathology.
+## Methods
+We developed a pathology-native quantitative representation by integrating one-shot multiplex immunofluorescence, digital image analysis, and computational pathology. Applied to 199 consecutively collected kidney biopsies, the framework generated continuous, compartment-resolved molecular measurements from a single tissue section while preserving the anatomical and diagnostic organization of renal pathology.
+
+## Results
+The quantitative pathology representation reproduced established pathological features while extending conventional categorical assessment through continuous quantification of complement activation, paraprotein imbalance, tubular injury, mesangial expansion, fibrosis, and compartment-specific molecular remodeling. Compartment-resolved measurements further defined shared glomerular injury states characterized by coordinated podocyte loss, endothelial remodeling, and extracellular matrix accumulation across diagnostic categories. The representation could also be integrated with complementary morphology-derived tissue representations, demonstrating that molecular abundance, spatial molecular organization, and tissue morphology capture distinct and complementary information while preserving biological interpretability.
+
+## Conclusions
+A pathology-native quantitative representation preserves how renal pathologists organize and interpret disease while enabling continuous, compartment-resolved measurement that supports quantitative comparison across patients, computational analysis, and biologically interpretable assessment from a single tissue section.
 
 ## ACCESS THE DATA
 
