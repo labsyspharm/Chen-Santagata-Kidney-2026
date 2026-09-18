@@ -98,7 +98,7 @@ install.packages(c("here", "tidybayes", "ggpubr", "ggbeeswarm", "qs", "janitor",
 Expected installation time is around 15-30 minutes depending on the internet speed.
 
 
-### CyCIF image processing
+### Orion image processing
 
 Download the example image data from Harvard tissue Atlas website (https://s3.amazonaws.com/www.cycif.org/152-kidney-imaging/LSP20571/index.html) and unzip the files to a local directory. Run the scripts in the `cycif_image_processing` folder sequentially to perform image stitching, registration, segmentation, and feature extraction.
 
